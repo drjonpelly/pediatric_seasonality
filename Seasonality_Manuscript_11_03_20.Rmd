@@ -1,0 +1,1139 @@
+---
+title: "Ensemble Machine Learning Illustrates the Effects of COVID 19 related Social Distancing Efforts on Pediatric Hospitalizations in the United States"
+author: Jonathan H. Pelletier, MD; Jaskaran Rakkar, MD; Alicia K. Au, MD, MS; Dana Fuhrman, DO; Robert S.B Clark, MD; Christopher M. Horvat, MD, MHA
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    fig_asp: 0.618
+    fig_width: 7
+    number_sections: no
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+---
+
+# Data loading and pre-processing
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(cowplot)
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  results = "hide"
+)
+
+start_time <- now()
+```
+
+```{r file loading}
+reading_function <- function(csv_file) {
+  temp_table <- read_csv(csv_file,
+    col_types =
+      cols(
+        `Hospital Number` = col_double(),
+        `Hospital City` = col_factor(),
+        `Medical Record Number` = col_double(),
+        `Discharge ID` = col_double(),
+        `Billing Number` = col_character(),
+        `Admit Date` = col_character(),
+        `Admit Hour` = col_double(),
+        `Admit Hour Indicator Title` = col_factor(),
+        `Discharge Date` = col_character(),
+        `Length Of Stay` = col_double(),
+        `Priority Of Admission Title` = col_factor(),
+        `Source Of Admission Title` = col_factor(),
+        `Patient Type` = col_double(),
+        `Patient Type Title` = col_factor(),
+        `Primary Source Of Payment` = col_double(),
+        `Primary Source Of Payment Title` = col_factor(),
+        `Principal Dx (ICD)` = col_factor(),
+        `Principal Dx Version (ICD)` = col_double(),
+        `Principal Dx Title (ICD)` = col_factor(),
+        `Gender Title` = col_factor(),
+        `Race - American Indian` = col_factor(),
+        `Race - Asian` = col_factor(),
+        `Race - Black` = col_factor(),
+        `Race - Other` = col_factor(),
+        `Race - Pacific Islander` = col_factor(),
+        `Race - White` = col_factor(),
+        `Ethnicity Title` = col_factor(),
+        `Admit Age In Days` = col_double(),
+        `Admit Age In Months` = col_double(),
+        `Complex Chronic Condition Flag` = col_factor(),
+        `Cardiovascular Flag` = col_factor(),
+        `Gastrointestinal Flag` = col_factor(),
+        `Hematologic or Immunologic Flag` = col_factor(),
+        `Malignancy Flag` = col_factor(),
+        `Mental Health Disorder Flag` = col_factor(),
+        `Metabolic Flag` = col_factor(),
+        `Neurologic and Neuromuscular Flag` = col_factor(),
+        `NICU Flag` = col_factor(),
+        `Other Congenital or Genetic Defect Flag` = col_factor(),
+        `Premature and Neonatal Flag` = col_factor(),
+        `Renal and Urologic Flag` = col_factor(),
+        `Respiratory Flag` = col_factor(),
+        `Secondary Dx Mental Health Disorder Flag` = col_factor(),
+        `Technology Dependent Flag` = col_factor(),
+        `TPN Flag` = col_factor(),
+        `Transplant Flag` = col_factor(),
+        `ICU Flag` = col_factor(),
+        `Total Days In ICU` = col_double(),
+        `Mechanical Vent Flag` = col_factor(),
+        `ECMO Flag` = col_factor(),
+        `Discharge Mortality Flag` = col_factor(),
+        `Disposition Title` = col_factor(),
+        `Adj Abstract Based Charges` = col_character(),
+        `Adj Estimated Cost` = col_character(),
+        `Abstract Based Charges` = col_character(),
+        `Estimated Cost` = col_character()
+      )
+  )
+
+  # replace all spaces in names with underscores, remove special characters and double spaces, change to lowercase
+  names(temp_table) <- names(temp_table) %>%
+    stringr::str_replace_all("\\s", "_") %>%
+    stringr::str_replace_all("-", "") %>%
+    stringr::str_replace_all("\\(", "_") %>%
+    stringr::str_replace_all("\\)", "") %>%
+    stringr::str_replace_all("__", "_") %>%
+    tolower()
+
+  return(temp_table)
+}
+
+all_phis_2010_to_2019 <- reading_function("PHIS_Reports/all_phis_2010_2019.csv")
+all_phis_2020 <- reading_function("PHIS_Reports/all_phis_2020.csv")
+
+trauma_diagnoses <- reading_function("PHIS_Reports/Trauma_Primary_Diagnosis.csv")
+mental_health_diagnoses <- reading_function("PHIS_Reports/Mental_Health_Primary_Diagnosis.csv")
+
+rm(reading_function)
+```
+
+```{r generate payment types factor}
+
+insurance_rename_function <- function(diagnosis_table) {
+  diagnosis_table <- diagnosis_table %>%
+    mutate(primary_source_of_payment_title = as.character(primary_source_of_payment_title)) %>%
+    mutate(primary_source_of_payment_simplified = case_when(
+      # Commercial
+      primary_source_of_payment_title == "Commercial Other" ~ "Commercial",
+      primary_source_of_payment_title == "Commercial HMO" ~ "Commercial",
+      primary_source_of_payment_title == "Commercial PPO" ~ "Commercial",
+      # Government
+      primary_source_of_payment_title == "In-State Medicaid (managed care)" ~ "Government",
+      primary_source_of_payment_title == "In-State Medicaid (other)" ~ "Government",
+      primary_source_of_payment_title == "Out-of-State Medicaid (all)" ~ "Government",
+      primary_source_of_payment_title == "TRICARE" ~ "Government",
+      primary_source_of_payment_title == "Other Government" ~ "Government",
+      primary_source_of_payment_title == "Medicare" ~ "Government",
+      primary_source_of_payment_title == "CHIP" ~ "Government",
+      # Other
+      primary_source_of_payment_title == "Other Payor" ~ "Other",
+      primary_source_of_payment_title == "Self Pay" ~ "Other",
+      primary_source_of_payment_title == "Unknown" ~ "Other",
+      primary_source_of_payment_title == "Hospital chose not to bill for this encounter" ~ "Other",
+      primary_source_of_payment_title == "Charity" ~ "Other",
+    )) %>%
+    mutate(primary_source_of_payment_simplified = factor(primary_source_of_payment_simplified))
+  return(diagnosis_table)
+}
+
+all_phis_2010_to_2019 <- insurance_rename_function(all_phis_2010_to_2019)
+all_phis_2020 <- insurance_rename_function(all_phis_2020)
+
+cat("\n \nThe following is a summary of the simplified all icu insurance column: \n \n")
+summary(all_phis_2010_to_2019$primary_source_of_payment_simplified)
+
+rm(insurance_rename_function)
+```
+
+```{r change cost column to numeric}
+
+cost_cleaning_function <- function(cost_column, cost_column_name) {
+  cost_temp <- suppressWarnings(str_remove(cost_column, "\\$") %>% str_remove(",") %>% as.numeric())
+  costs_missing <- length(subset(cost_temp, is.na(cost_temp)))
+  cat("There are", costs_missing, "patients with missing cost data in", cost_column_name, "\n These values have been set to NA.\n \n")
+  return(cost_temp)
+}
+
+
+# Apply cost cleaning to 2010-2019 table
+all_phis_2010_to_2019$estimated_cost <- cost_cleaning_function(all_phis_2010_to_2019$estimated_cost, "all_phis_2010_to_2019$estimated_cost")
+
+all_phis_2010_to_2019$adj_estimated_cost <- cost_cleaning_function(all_phis_2010_to_2019$adj_estimated_cost, "all_phis_2010_to_2019$adj_estimated_cost")
+
+all_phis_2010_to_2019$abstract_based_charges <- cost_cleaning_function(all_phis_2010_to_2019$abstract_based_charges, "all_phis_2010_to_2019$abstract_based_charges")
+
+all_phis_2010_to_2019$adj_abstract_based_charges <- cost_cleaning_function(all_phis_2010_to_2019$adj_abstract_based_charges, "all_phis_2010_to_2019$adj_abstract_based_charges")
+
+
+# Apply cost cleaning to 2020 table
+all_phis_2020$estimated_cost <- cost_cleaning_function(all_phis_2020$estimated_cost, "all_phis_2020$estimated_cost")
+
+all_phis_2020$adj_estimated_cost <- cost_cleaning_function(all_phis_2020$adj_estimated_cost, "all_phis_2020$adj_estimated_cost")
+
+all_phis_2020$abstract_based_charges <- cost_cleaning_function(all_phis_2020$abstract_based_charges, "all_phis_2020$abstract_based_charges")
+
+all_phis_2020$adj_abstract_based_charges <- cost_cleaning_function(all_phis_2020$adj_abstract_based_charges, "all_phis_2020$adj_abstract_based_charges")
+
+rm(cost_cleaning_function)
+```
+
+```{r generate discharge year column for grouping}
+discharge_year_function <- function(diagnosis_table) {
+  discharge_year_table <- diagnosis_table %>%
+    mutate(discharge_date = mdy(discharge_date)) %>%
+    mutate(discharge_year = as.numeric(format(discharge_date, "%Y")))
+  return(discharge_year_table)
+}
+
+all_phis_2010_to_2019 <- discharge_year_function(all_phis_2010_to_2019)
+all_phis_2020 <- discharge_year_function(all_phis_2020)
+
+rm(discharge_year_function)
+```
+
+```{r restrict cohorts to hospitals with 10 years of data}
+
+hospitals_before_filtering_for_10_years_of_data <- length(levels(all_phis_2010_to_2019$hospital_city))
+
+years_of_data_function <- function(diagnosis_table) {
+  years_of_data <- diagnosis_table %>%
+    group_by(hospital_number) %>%
+    dplyr::summarise(
+      "years" = max(discharge_year) - min(discharge_year)
+    )
+  years_of_data <- subset(years_of_data, years_of_data$years == 9) # this is 9 and not 10 because 2019-2010 = 9
+  temp <- subset(diagnosis_table, hospital_number %in% years_of_data$hospital_number) # select for hospitals with 10 years of data (max-min=9)
+  return(temp)
+}
+
+all_phis_2010_to_2019 <- years_of_data_function(all_phis_2010_to_2019)
+
+rm(years_of_data_function)
+
+hospitals_after_filtering_for_10_years_of_data <- length(levels(all_phis_2010_to_2019$hospital_city))
+```
+
+```{r match_2020_hospitalizations_to_hospitals_from_2010_to_2019}
+# match the 2020 hospitals to those selected in 2010-2019
+all_phis_2020 <- all_phis_2020 %>%
+  filter(hospital_number %in% all_phis_2010_to_2019$hospital_number)
+
+cat("After filtering, there are", nrow(all_phis_2020), "admissions remaining in the 2020 PHIS data.")
+```
+
+```{r restrict_to_admit_year_2010_to_2019}
+
+# this step is necessary because the PHIS query is 1/1/2010 to 4/1/2020 (discharge date). This ensures that kids admitted in the last week of 2019 are still represented.
+
+admit_year_function <- function(diagnosis_table) {
+  require(lubridate)
+  admit_year_table <- diagnosis_table %>%
+    mutate(admit_year = mdy(admit_date)) %>%
+    mutate(admit_year = as.numeric(format(admit_year, "%Y"))) %>%
+    filter(admit_year >= 2010 & admit_year < 2020)
+  return(admit_year_table)
+}
+
+all_phis_2010_to_2019 <- admit_year_function(all_phis_2010_to_2019)
+
+rm(admit_year_function)
+```
+
+```{r add_admit_year_to_2020}
+all_phis_2020 <- all_phis_2020 %>%
+  mutate(admit_year = 2020)
+```
+
+```{r combine_2020_and_2010_to_2019_queries}
+all_phis_2010_to_2020 <- rbind(all_phis_2010_to_2019, all_phis_2020)
+```
+
+```{r confirm that there are no duplicate discharge_id values before analysis}
+
+ifelse(nrow(subset(all_phis_2010_to_2019, duplicated(all_phis_2010_to_2019$discharge_id))) == 0, paste("GOOD TO GO: There are no duplicated discharge IDs within the all PHIS 2010-2019 spreadsheet."), paste("WARNING: There are duplicate discharge IDs within the all PHIS 2010-2019 spreadsheet."))
+
+ifelse(nrow(subset(all_phis_2020, duplicated(all_phis_2020$discharge_id))) == 0, paste("GOOD TO GO: There are no duplicated discharge IDs within the all PHIS 2020 spreadsheet."), paste("WARNING: There are duplicate discharge IDs within the all PHIS 2020 spreadsheet."))
+
+ifelse(nrow(subset(all_phis_2010_to_2020, duplicated(all_phis_2010_to_2020$discharge_id))) == 0, paste("GOOD TO GO: There are no duplicated discharge IDs within the all PHIS 2010-2020 spreadsheet."), paste("WARNING: There are duplicate discharge IDs within the all PHIS 2010-2020 spreadsheet."))
+```
+
+```{r generate_simplified_principal_dx_column}
+all_phis_2010_to_2020 <- all_phis_2010_to_2020 %>%
+  mutate(principal_dx_title_icd = tolower(principal_dx_title_icd)) %>%
+  mutate(simplified_principal_dx = case_when(
+    # birth
+    str_detect(principal_dx_title_icd, "liveborn") ~ "Birth",
+    # appendicitis
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^540") ~ "Appendicitis",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^K35") ~ "Appendicitis",
+    # asthma
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^493") ~ "Asthma",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^J45") ~ "Asthma",
+    # bronchiolitis
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^4661") ~ "Bronchiolitis",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^J21") ~ "Bronchiolitis",
+    # cardiac arrest
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^4275") ~ "Cardiac arrest",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^I46") ~ "Cardiac arrest",
+    # dka
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^2501") ~ "Diabetic ketoacidosis",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^E101") ~ "Diabetic ketoacidosis",
+    # dehydration
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^2765") ~ "Dehydration",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^E86") ~ "Dehydration",
+    # kawasaki
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^4461") ~ "Kawasaki syndrome",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^M303") ~ "Kawasaki syndrome",
+    # pneumonia
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^481") ~ "S. pneumoniae",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^J13") ~ "S. pneumoniae",
+    # hlhs
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^7467") ~ "HLHS",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^Q234") ~ "HLHS",
+    # tof
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^7452") ~ "TOF",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^Q213") ~ "TOF",
+    # asd
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^7455") ~ "ASD",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^Q211") ~ "ASD",
+    # coa
+    principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^74710") ~ "COA",
+    principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^Q251") ~ "COA",
+    # sepsis
+    str_detect(principal_dx_title_icd, "\\bsepsis\\b") ~ "Sepsis",
+    str_detect(principal_dx_title_icd, "\\bseptic\\b") ~ "Sepsis",
+    str_detect(principal_dx_title_icd, "\\bsepticemia\\b") ~ "Sepsis",
+  ))
+
+# filter for trauma & mental health admissions. These admissions are pulled from PHIS queries because they can't easily be filtered based on the diagnosis name or code (because the codes contain both letters and numbers, and require a "between" filter).
+
+all_phis_2010_to_2020 <- all_phis_2010_to_2020 %>% mutate(simplified_principal_dx = case_when(
+  discharge_id %in% trauma_diagnoses$discharge_id ~ "Trauma",
+  TRUE ~ simplified_principal_dx
+))
+
+all_phis_2010_to_2020 <- all_phis_2010_to_2020 %>% mutate(simplified_principal_dx = case_when(
+  discharge_id %in% mental_health_diagnoses$discharge_id ~ "Mental health",
+  TRUE ~ simplified_principal_dx
+))
+
+all_phis_2010_to_2020 <- all_phis_2010_to_2020 %>%
+  mutate(simplified_principal_dx = factor(simplified_principal_dx))
+
+cat("Below is a summary of the simplified principal diagnosis column:
+    
+")
+
+summary(all_phis_2010_to_2020$simplified_principal_dx)
+```
+
+```{r perform_date_analysis_of_admit_date}
+all_phis_2010_to_2020 <- all_phis_2010_to_2020 %>%
+  mutate(admit_date = lubridate::mdy(admit_date)) %>%
+  mutate(admit_week = lubridate::week(admit_date)) %>%
+  mutate(admit_month = lubridate::month(admit_date)) %>%
+  mutate(admit_year = lubridate::year(admit_date))
+```
+
+```{r generate_code_and_title_column}
+all_phis_2010_to_2020 <- all_phis_2010_to_2020 %>%
+  mutate(principal_dx_icd_code_and_title = paste0(principal_dx_icd, " - ", principal_dx_title_icd)) %>%
+  mutate(principal_dx_icd_code_and_title = factor(principal_dx_icd_code_and_title))
+```
+
+```{r generate_demographics_table}
+
+# Complex chronic condition flag definitions can be found at: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4134331/ associated ICD codes can be found in additional file 5.
+
+demographics_table_function <- function(cohort_table, cohort_name, cohort_discharge_id_column) {
+  demographics_table <- cohort_table %>% summarise(
+    "number of unique admissions" = n_distinct(discharge_id),
+    "number of unique patients" = n_distinct(medical_record_number),
+    "median age in years (IQR)" = round(median(admit_age_in_months / 12), 1),
+    "25% age in years" = round(quantile(admit_age_in_months / 12, probs = c(0.25)), 1),
+    "75% age in years" = round(quantile(admit_age_in_months / 12, probs = c(0.75)), 1),
+    "male" = sum(gender_title == "Male"),
+    "white" = sum(race_white == "Y"),
+    "black" = sum(race_black == "Y"),
+    "asian" = sum(race_asian == "Y"),
+    "american indian" = sum(race_american_indian == "Y"),
+    "pacific islander" = sum(race_pacific_islander == "Y"),
+    "other race" = sum(race_other == "Y"),
+    "hispanic" = sum(ethnicity_title == "Hispanic or Latino"),
+    "commercial insurance" = sum(primary_source_of_payment_simplified == "Commercial"),
+    "government insurance" = sum(primary_source_of_payment_simplified == "Government"),
+    "other insurance" = sum(primary_source_of_payment_simplified == "Other"),
+    "complex chronic condition" = sum(complex_chronic_condition_flag == "Y"),
+    "cardiovascular condition" = sum(cardiovascular_flag == "Y"),
+    "gastrointestinal condition" = sum(gastrointestinal_flag == "Y"),
+    "hematologic or immunologic condition" = sum(hematologic_or_immunologic_flag == "Y"),
+    "malignancy" = sum(malignancy_flag == "Y"),
+    "metabolic condition" = sum(metabolic_flag == "Y"),
+    "neurologic condition" = sum(neurologic_and_neuromuscular_flag == "Y"),
+    "genetic condition" = sum(other_congenital_or_genetic_defect_flag == "Y"),
+    "premature or neonatal condition" = sum(premature_and_neonatal_flag == "Y"),
+    "renal condition" = sum(renal_and_urologic_flag == "Y"),
+    "respiratory condition" = sum(respiratory_flag == "Y"),
+    "technology dependent" = sum(technology_dependent_flag == "Y"),
+    "transplant recipient" = sum(transplant_flag == "Y"),
+    "mental health disorder" = sum(mental_health_disorder_flag == "Y"),
+    "median hospital length of stay (IQR)" = median(length_of_stay, na.rm = TRUE),
+    "25% hospital length of stay" = quantile(length_of_stay, probs = c(0.25), na.rm = TRUE),
+    "75% hospital length of stay" = quantile(length_of_stay, probs = c(0.75), na.rm = TRUE),
+    "admitted to icu" = sum(icu_flag == "Y"),
+    "received mechanical ventilation" = sum(mechanical_vent_flag == "Y"),
+    "received ecmo" = sum(ecmo_flag == "Y"),
+    "median abstracted charge (IQR)" = median(abstract_based_charges, na.rm = TRUE),
+    "25% abstracted charge" = quantile(abstract_based_charges, probs = c(0.25), na.rm = TRUE),
+    "75% abstracted charge" = quantile(abstract_based_charges, probs = c(0.75), na.rm = TRUE),
+    "median cms adjusted abstracted charge (IQR)" = median(adj_abstract_based_charges, na.rm = TRUE),
+    "25% cms adjusted abstracted charge" = quantile(adj_abstract_based_charges, probs = c(0.25), na.rm = TRUE),
+    "75% cms adjusted abstracted charge" = quantile(adj_abstract_based_charges, probs = c(0.75), na.rm = TRUE),
+    "survived to discharge" = sum(discharge_mortality_flag == "N")
+  )
+  demographics_table <- as_tibble(cbind(variable = names(demographics_table), t(demographics_table)), .name_repair = c("minimal"))
+  colnames(demographics_table) <- c("Variable", "cohort_n")
+  demographics_table$Variable <- as.character(demographics_table$Variable)
+  demographics_table$cohort_n <- as.numeric(demographics_table$cohort_n)
+  demographics_table$cohort_percent <- round((demographics_table$cohort_n / n_distinct(cohort_discharge_id_column) * 100), digits = 1)
+  demographics_table <- rbind(c("Variable", cohort_name, ""), demographics_table) # add headers for hux
+  demographics_table$cohort_percent <- gsub("$", "\\%", demographics_table$cohort_percent) # add percents to end of col3
+  demographics_table[4, 3] <- paste(demographics_table[[5, 2]], demographics_table[[6, 2]], sep = "-") # add IQR for ages
+  demographics_table <- demographics_table[-c(5, 6), ] # remove 25% and 75% rows
+  demographics_table[30, 3] <- paste(demographics_table[[31, 2]], demographics_table[[32, 2]], sep = "-") # add IQR for LOS
+  demographics_table <- demographics_table[-c(31, 32), ] # remove 25% and 75% rows
+  demographics_table[34, 3] <- paste(demographics_table[[35, 2]], demographics_table[[36, 2]], sep = "-") # add IQR charge
+  demographics_table <- demographics_table[-c(35, 36), ] # remove 25% and 75% rows
+  demographics_table[35, 3] <- paste(demographics_table[[36, 2]], demographics_table[[37, 2]], sep = "-") # add IQR adj charg
+  demographics_table <- demographics_table[-c(36, 37), ] # remove 25% and 75% rows
+  demographics_table$cohort_percent <- gsub("^", "\\(", demographics_table$cohort_percent) # add parenthesis to beginning of col3
+  demographics_table$cohort_percent <- gsub("$", "\\)", demographics_table$cohort_percent) # add parenthesis to end of col3
+  demographics_table[3, 3] <- "" # remove percents from unique patients
+  demographics_table[1, 3] <- "" # remove header for third column
+  demographics_table <- unite(demographics_table, Values, c(cohort_n, cohort_percent), sep = " ")
+  demographics_table$Values <- gsub(" $", "", demographics_table$Values) # remove terminal spaces from merging
+  return(demographics_table)
+}
+
+demographics_all_phis_2010_to_2020 <- demographics_table_function(all_phis_2010_to_2020, "All PHIS Inpatient Encounters", all_phis_2010_to_2020$discharge_id)
+
+rm(demographics_table_function)
+```
+
+
+```{r cost_analysis_for_supplemental_figure_3}
+cost_table <- all_phis_2010_to_2020 %>%
+  filter(!is.na(adj_abstract_based_charges))
+
+cost_encounters <- paste0(prettyNum(nrow(cost_table), big.mark = ","), "/", prettyNum(nrow(all_phis_2010_to_2020), big.mark = ","), " (", round(nrow(cost_table) / nrow(all_phis_2010_to_2020) * 100, 1), "%)")
+cost_patients <- paste0(prettyNum(length(unique(cost_table$medical_record_number)), big.mark = ","))
+
+# GDP tables can be found at: https://apps.bea.gov/iTable/iTable.cfm?reqid=19&step=2#reqid=19&step=2&isuri=1&1921=survey
+# GDP is: Table 1.1.5. Gross Domestic Product
+
+library(vroom)
+bea_gdp <- vroom::vroom("Seasonality_GDP_Tables//gdp_table.csv", col_select = c("Year", "Quarter", "Gross domestic product"))
+
+bea_gdp <- bea_gdp %>%
+  group_by(Year) %>%
+  group_by(Quarter, .add = TRUE) %>%
+  summarise(
+    quarterly_gdp = `Gross domestic product`
+  ) %>%
+  mutate(dollars_2010_q1 = quarterly_gdp / .[[1, 3]]) %>%
+  mutate(Quarter = case_when(
+    Quarter == "Q1" ~ 1,
+    Quarter == "Q2" ~ 2,
+    Quarter == "Q3" ~ 3,
+    Quarter == "Q4" ~ 4,
+  )) %>%
+  mutate(Quarter = as.numeric(Quarter))
+
+quarterly_charges_table <- cost_table %>%
+  group_by(lubridate::year(admit_date)) %>%
+  group_by(lubridate::quarter(admit_date), .add = TRUE) %>%
+  summarize(
+    quarterly_adj_charges = sum(adj_abstract_based_charges)
+  ) %>%
+  rename("Year" = `lubridate::year(admit_date)`, "Quarter" = `lubridate::quarter(admit_date)`) %>%
+  left_join(., bea_gdp, by = c("Year", "Quarter")) %>%
+  mutate(quarterly_normalized_charges = quarterly_adj_charges / dollars_2010_q1)
+
+# add in dummy variables for 2020 q3 and 2020 q4 to make bar sizes constant for supplemental figure 3. Do not include these in any other figure or calculation
+
+dummy_2020_cost_table <- tribble(
+  ~Year, ~Quarter, ~quarterly_adj_charges, ~quarterly_gdp, ~dollars_2010_q1, ~quarterly_normalized_charges,
+  2020, 3, 0, 0, 0, 0,
+  2020, 4, 0, 0, 0, 0
+)
+
+supplemental_figure_3 <- quarterly_charges_table %>%
+  full_join(., dummy_2020_cost_table) %>%
+  ggplot(aes(x = factor(Year), y = quarterly_normalized_charges / 1000000000, fill = factor(Quarter))) +
+  geom_col(position = "dodge2") +
+  theme_bw() +
+  scale_fill_grey(name = "Admission Quarter") +
+  xlab("Admission Year") +
+  ylab("Total Admission Charges (Billions $)")
+
+supplemental_figure_4 <- cost_table %>%
+  mutate(admission_year = year(admit_date)) %>%
+  mutate(admission_quarter = quarter(admit_date)) %>%
+  left_join(., bea_gdp, by = c(admission_year = "Year", admission_quarter = "Quarter")) %>%
+  mutate(quarterly_normalized_charges = adj_abstract_based_charges / dollars_2010_q1 / 1000) %>%
+  mutate(year_and_quarter = (admission_quarter - 1) / 4) %>%
+  mutate(year_and_quarter = admit_year + year_and_quarter) %>%
+  arrange(year_and_quarter) %>%
+  ggplot(aes(x = factor(year_and_quarter), y = quarterly_normalized_charges)) +
+  geom_boxplot(outlier.shape = NA, notch = TRUE, fill = "gray80") +
+  coord_cartesian(ylim = c(0, 130)) +
+  scale_x_discrete(name = "Admission Year and Quarter", breaks = seq(2010, 2020)) +
+  ylab("Charges Per Admission (Thousands $)") +
+  theme_bw()
+
+charges_median_q1 <- paste0("$", prettyNum(round(median(filter(quarterly_charges_table, Quarter == 1 & Year < 2020)$quarterly_normalized_charges)), big.mark = ","))
+
+charges_2020_q1 <- paste0("$", prettyNum(round(median(filter(quarterly_charges_table, Quarter == 1 & Year == 2020)$quarterly_normalized_charges)), big.mark = ","))
+
+charges_2020_q1_percent <- paste0("(", round(median(filter(quarterly_charges_table, Quarter == 1 & Year == 2020)$quarterly_normalized_charges) / median(filter(quarterly_charges_table, Quarter == 1 & Year < 2020)$quarterly_normalized_charges) * 100, 1), "%)")
+
+charges_median_q2 <- paste0("$", prettyNum(round(median(filter(quarterly_charges_table, Quarter == 2 & Year < 2020)$quarterly_normalized_charges)), big.mark = ","))
+
+charges_2020_q2 <- paste0("$", prettyNum(round(median(filter(quarterly_charges_table, Quarter == 2 & Year == 2020)$quarterly_normalized_charges)), big.mark = ","))
+
+charges_2020_q2_percent <- paste0("(", round(median(filter(quarterly_charges_table, Quarter == 2 & Year == 2020)$quarterly_normalized_charges) / median(filter(quarterly_charges_table, Quarter == 2 & Year < 2020)$quarterly_normalized_charges) * 100, 1), "%)")
+
+encounter_cost_2010_to_2019 <- cost_table %>%
+  mutate(admission_year = year(admit_date)) %>%
+  mutate(admission_quarter = quarter(admit_date)) %>%
+  left_join(., bea_gdp, by = c(admission_year = "Year", admission_quarter = "Quarter")) %>%
+  filter(admission_year < 2020) %>%
+  transmute(quarterly_normalized_charges = adj_abstract_based_charges / dollars_2010_q1)
+
+encounter_cost_2020 <- cost_table %>%
+  mutate(admission_year = year(admit_date)) %>%
+  mutate(admission_quarter = quarter(admit_date)) %>%
+  left_join(., bea_gdp, by = c(admission_year = "Year", admission_quarter = "Quarter")) %>%
+  filter(admission_year == 2020) %>%
+  transmute(quarterly_normalized_charges = adj_abstract_based_charges / dollars_2010_q1)
+
+median_encounter_cost_2010_to_2019 <- paste0("$", prettyNum(round(summary(encounter_cost_2010_to_2019$quarterly_normalized_charges)[[3]]), big.mark = ","))
+
+median_encounter_cost_2020 <- paste0("$", prettyNum(round(summary(encounter_cost_2020$quarterly_normalized_charges)[[3]]), big.mark = ","))
+
+median_encounter_cost_wilcox_p_value <- paste0("p ", ifelse(wilcox.test(encounter_cost_2010_to_2019$quarterly_normalized_charges, encounter_cost_2020$quarterly_normalized_charges)$p.value < 0.001, "< 0.001", round(wilcox.test(encounter_cost_2010_to_2019$quarterly_normalized_charges, encounter_cost_2020$quarterly_normalized_charges)$p.value, 3)))
+```
+
+
+```{r seasonality_graphs_for_figure_1}
+seasonality_graphs_function <- function(diagnosis_table) {
+  temp <- diagnosis_table
+  temp$actual_admit_date <- temp$admit_date
+  temp$normalized_admit_date <- temp$admit_date
+  temp$normalized_admit_week <- week(temp$admit_date)
+  temp$actual_admit_year <- year(temp$actual_admit_date)
+  temp$month_no_day <- mdy(paste(temp$admit_month, "01", temp$admit_year))
+  year(temp$normalized_admit_date) <- 2010 # set to a single year to combine years together
+
+  # Seasonality Barplot
+  seasonal_barplot <- temp %>%
+    group_by(month_no_day) %>%
+    summarize(
+      n = n()
+    ) %>%
+    ggplot(aes(month_no_day, n)) +
+    geom_col(fill = "gray60") +
+    scale_x_date(date_breaks = "2 years", date_labels = "%b %Y", date_minor_breaks = "1 year") +
+    theme_bw() +
+    ylab("Admissions (n)") +
+    xlab("Month and Year")
+
+  summary_2020 <- temp %>%
+    filter(admit_year == 2020) %>%
+    group_by(admit_month) %>%
+    group_by(admit_year, .add = TRUE) %>%
+    summarize(
+      "Number of Admissions" = n()
+    )
+
+  # LOESS Smoothing Graph
+  overall_seaonsality_plot <- temp %>%
+    group_by(admit_month) %>%
+    filter(admit_year < 2020) %>%
+    group_by(admit_year, .add = TRUE) %>%
+    summarize(
+      "Number of Admissions" = n()
+    ) %>%
+    pivot_longer(cols = c(`Number of Admissions`)) %>%
+    mutate(name = factor(name, levels = c("Number of Admissions"))) %>%
+    ggplot(aes(admit_month, value, color = admit_year)) +
+    geom_line(aes(group = admit_year), alpha = 0.5) +
+    geom_smooth(color = "black") +
+    scale_color_distiller(name = "Admit Year", palette = "Blues", breaks = seq(2010, 2019, by = 3)) +
+    theme_bw() +
+    scale_x_continuous(name = "Admit Month", breaks = c(1, 4, 7, 10), labels = c("Jan", "Apr", "Jul", "Oct"), minor_breaks = seq(1, 12, 1)) +
+    ylab("Admissions (n)")
+
+  # add 2020 data
+  overall_seaonsality_plot <- overall_seaonsality_plot +
+    geom_line(aes(admit_month, `Number of Admissions`), data = summary_2020, color = "red3")
+
+  # Tukey Table
+
+  m1 <- temp %>%
+    filter(admit_year < 2020) %>%
+    group_by(admit_year) %>%
+    group_by(admit_month, .add = TRUE) %>%
+    summarize(
+      number_of_admissions = n()
+    ) %>%
+    glm(number_of_admissions ~ admit_year + factor(admit_month), family = "poisson", data = .)
+
+  tukey_table <- as_tibble(TukeyHSD(aov(m1))$`factor(admit_month)`[1:11, ]) %>%
+    mutate(Month = c("February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")) %>%
+    mutate("Mean Difference [Intervals]" = paste0(round(diff, 1), " [", round(lwr, 1), ", ", round(upr, 1), "]")) %>%
+    mutate("Tukey P-Value" = ifelse(`p adj` < 0.001, "< 0.001", round(`p adj`, 3))) %>%
+    select(Month, "Mean Difference [Intervals]", "Tukey P-Value") %>%
+    rbind(tribble(
+      ~Month, ~"Mean Difference [Intervals]", ~"Tukey P-Value",
+      "January", "Reference", "Reference"
+    ), .)
+
+  return(list(seasonal_barplot, overall_seaonsality_plot, tukey_table))
+}
+
+seasonality_graphs_all_phis <- seasonality_graphs_function(all_phis_2010_to_2020)
+
+figure_1 <- cowplot::plot_grid(seasonality_graphs_all_phis[[1]], seasonality_graphs_all_phis[[2]], labels = "AUTO", ncol = 1)
+ggsave("Seasonality_Manuscript_Figures/figure_1.png")
+ggsave("Seasonality_Manuscript_Figures/figure_1.tiff")
+```
+
+```{r diagnosis_specific_seasonality_graphs_for_figure_2}
+diagnosis_seasonality_graphs_function <- function(diagnosis_table, graph_title) {
+  temp <- diagnosis_table
+  temp$actual_admit_date <- temp$admit_date
+  temp$normalized_admit_date <- temp$admit_date
+  temp$normalized_admit_week <- week(temp$admit_date)
+  temp$actual_admit_year <- year(temp$actual_admit_date)
+  temp$month_no_day <- mdy(paste(temp$admit_month, "01", temp$admit_year))
+  year(temp$normalized_admit_date) <- 2010 # set to a single year to combine years together
+
+
+  summary_2020 <- temp %>%
+    filter(admit_year == 2020) %>%
+    group_by(admit_month) %>%
+    group_by(admit_year, .add = TRUE) %>%
+    summarize(
+      "Number of Admissions" = n()
+    )
+
+  # LOESS Smoothing Graph
+  overall_seaonsality_plot <- temp %>%
+    group_by(admit_month) %>%
+    filter(admit_year < 2020) %>%
+    group_by(admit_year, .add = TRUE) %>%
+    summarize(
+      "Number of Admissions" = n()
+    ) %>%
+    pivot_longer(cols = c(`Number of Admissions`)) %>%
+    mutate(name = factor(name, levels = c("Number of Admissions"))) %>%
+    ggplot(aes(admit_month, value, color = admit_year)) +
+    geom_line(aes(group = admit_year), alpha = 0.5) +
+    geom_smooth(color = "black") +
+    labs(title = graph_title) +
+    scale_color_distiller(name = "Admit Year", palette = "Blues", breaks = seq(2010, 2019, by = 3)) +
+    theme_bw() +
+    scale_x_continuous(name = "Admit Month", breaks = c(1, 4, 7, 10), labels = c("Jan", "Apr", "Jul", "Oct"), minor_breaks = seq(1, 12, 1)) +
+    ylab("Admissions (n)") +
+    theme(legend.position = "none", axis.title.x = element_blank(), axis.title.y = element_blank(), plot.title = element_text(size = 10, hjust = 0.5))
+
+  # add 2020 data
+  overall_seaonsality_plot <- overall_seaonsality_plot +
+    geom_line(aes(admit_month, `Number of Admissions`), data = summary_2020, color = "red3")
+
+  return(overall_seaonsality_plot)
+}
+
+plot_list_figure_2 <- list()
+for (i in levels(all_phis_2010_to_2020$simplified_principal_dx)) {
+  plot_list_figure_2[[i]] <- diagnosis_seasonality_graphs_function(filter(all_phis_2010_to_2020, simplified_principal_dx == i), i)
+}
+
+
+library(grid)
+library(gridExtra)
+library(cowplot)
+
+figure_y_label <- textGrob("Admissions (n)",
+  gp = gpar(fontface = "bold", col = "black", fontsize = 10), rot = 90
+)
+
+figure_x_label <- textGrob("Admit Month",
+  gp = gpar(fontface = "bold", col = "black", fontsize = 10)
+)
+
+figure_2 <- cowplot::plot_grid(plotlist = plot_list_figure_2, ncol = 4)
+figure_2 <- arrangeGrob(figure_2, left = figure_y_label, bottom = figure_x_label)
+
+ggsave("Seasonality_Manuscript_Figures/figure_2.png", figure_2)
+ggsave("Seasonality_Manuscript_Figures/figure_2.tiff", figure_2)
+```
+
+```{r generate_summary_statistics}
+total_encounters <- prettyNum(nrow(all_phis_2010_to_2020), big.mark = ",")
+total_patients <- prettyNum(length(unique(all_phis_2010_to_2020$medical_record_number)), big.mark = ",")
+encounters_2020 <- prettyNum(nrow(all_phis_2020), big.mark = ",")
+percent_2020 <- round(nrow(all_phis_2020) / nrow(all_phis_2010_to_2020) * 100, 2)
+percent_male <- paste0(round(nrow(filter(all_phis_2010_to_2020, gender_title == "Male")) / nrow(all_phis_2010_to_2020) * 100, 1), "%")
+percent_white <- paste0(round(nrow(filter(all_phis_2010_to_2020, race_white == "Y")) / nrow(all_phis_2010_to_2020) * 100, 1), "%")
+percent_black <- paste0(round(nrow(filter(all_phis_2010_to_2020, race_black == "Y")) / nrow(all_phis_2010_to_2020) * 100, 1), "%")
+percent_hispanic <- paste0(round(nrow(filter(all_phis_2010_to_2020, ethnicity_title == "Hispanic or Latino")) / nrow(all_phis_2010_to_2020) * 100, 1), "%")
+percent_government <- paste0(round(nrow(filter(all_phis_2010_to_2020, primary_source_of_payment_simplified == "Government")) / nrow(all_phis_2010_to_2020) * 100, 1), "%")
+percent_ccc <- paste0(round(nrow(filter(all_phis_2010_to_2020, complex_chronic_condition_flag == "Y")) / nrow(all_phis_2010_to_2020) * 100, 1), "%")
+percent_alive <- paste0(round(nrow(filter(all_phis_2010_to_2020, discharge_mortality_flag == "N")) / nrow(all_phis_2010_to_2020) * 100, 1), "%")
+
+included_diagnoses <- prettyNum(nrow(filter(all_phis_2010_to_2020, !is.na(simplified_principal_dx))), big.mark = ",")
+
+included_diagnoses_percent <- round(nrow(filter(all_phis_2010_to_2020, !is.na(simplified_principal_dx))) / nrow(all_phis_2010_to_2020) * 100, 1)
+
+temp <- all_phis_2010_to_2020 %>%
+  filter(admit_year < 2020) %>%
+  group_by(admit_month) %>%
+  group_by(admit_year, .add = TRUE) %>%
+  count() %>%
+  filter(admit_month == 1 | admit_month == 7)
+
+jan_median_admissions <- prettyNum(round(summary(subset(temp, admit_month == 1)$n)[[3]]), big.mark = ",")
+july_median_admissions <- prettyNum(round(summary(subset(temp, admit_month == 7)$n)[[3]]), big.mark = ",")
+
+jan_july_wilcox_p <- ifelse(wilcox.test(subset(temp, admit_month == 1)$n, subset(temp, admit_month == 7)$n)$p.value < 0.001, "< 0.001", paste0("= ", round(wilcox.test(subset(temp, admit_month == 1)$n, subset(temp, admit_month == 7)$n)$p.value, 3)))
+rm(temp)
+
+temp <- all_phis_2010_to_2020 %>%
+  group_by(admit_month) %>%
+  filter(admit_year < 2020) %>%
+  group_by(admit_year, .add = TRUE) %>%
+  count() %>%
+  filter(admit_month == 4) %>%
+  ungroup()
+
+april_median_admissions <- prettyNum(round(summary(temp$n)[[3]]), big.mark = ",")
+rm(temp)
+
+temp <- all_phis_2010_to_2020 %>%
+  group_by(admit_month) %>%
+  filter(admit_year < 2020) %>%
+  group_by(admit_year, .add = TRUE) %>%
+  count() %>%
+  filter(admit_month == 6) %>%
+  ungroup()
+
+june_median_admissions <- prettyNum(round(summary(temp$n)[[3]]), big.mark = ",")
+rm(temp)
+
+temp_2020 <- all_phis_2010_to_2020 %>%
+  group_by(admit_month) %>%
+  filter(admit_year == 2020) %>%
+  count() %>%
+  filter(admit_month == 4)
+
+april_2020_admissions <- prettyNum(round(temp_2020[[1, 2]]), big.mark = ",")
+rm(temp_2020)
+
+temp_2020 <- all_phis_2010_to_2020 %>%
+  group_by(admit_month) %>%
+  filter(admit_year == 2020) %>%
+  count() %>%
+  filter(admit_month == 6)
+
+june_2020_admissions <- prettyNum(round(temp_2020[[1, 2]]), big.mark = ",")
+rm(temp_2020)
+
+temp <- filter(all_phis_2010_to_2020, str_detect(principal_dx_title_icd, "acute respiratory failure")) %>%
+  filter(admit_month == 12) %>%
+  group_by(admit_year) %>%
+  count()
+
+respiratory_failure_dec_2018 <- prettyNum(round(temp[9, 2]), big.mark = ",")
+respiratory_failure_dec_2019 <- prettyNum(round(temp[10, 2]), big.mark = ",")
+
+rm(temp)
+
+temp <- filter(all_phis_2010_to_2020, str_detect(principal_dx_title_icd, "acute respiratory failure")) %>%
+  filter(admit_month == 1) %>%
+  group_by(admit_year) %>%
+  count()
+
+respiratory_failure_jan_2019 <- prettyNum(round(temp[10, 2]), big.mark = ",")
+respiratory_failure_jan_2020 <- prettyNum(round(temp[11, 2]), big.mark = ",")
+
+rm(temp)
+```
+
+```{r generate_ensemble_forecasts_by_diganosis_for_figure_3}
+RNGversion(3.6)
+set.seed(65)
+
+diagnosis_ensemble_forecast_function <- function(diagnosis_table, graph_name) {
+  temp <- diagnosis_table
+  temp$actual_admit_date <- temp$admit_date
+  temp$admit_month <- month(temp$actual_admit_date)
+  temp$admit_year <- year(temp$actual_admit_date)
+
+  time_series_admission_table <- temp %>%
+    group_by(admit_year) %>%
+    group_by(admit_month, add = TRUE) %>%
+    summarize(
+      "total_admissions" = n()
+    )
+
+  ts_total_admissions_monthly <- ts(time_series_admission_table$total_admissions, frequency = 12, start = c(2010, 1))
+
+  require(forecast)
+  require(forecastHybrid)
+  require(Metrics)
+
+  train <- window(ts_total_admissions_monthly, end = c(2019, 6))
+  mape_test_2019 <- window(ts_total_admissions_monthly, start = c(2019, 7), end = c(2019, 12))
+  mape_test_2020 <- window(ts_total_admissions_monthly, start = c(2020, 1))
+  test <- window(ts_total_admissions_monthly, start = c(2019, 7))
+
+  ensemble_model <- forecastHybrid::hybridModel(train, models = "ans", lambda = "auto", weights = "cv.errors", windowSize = 48)
+
+  ensemble_prediction <- forecast::forecast(ensemble_model, h = 12)
+
+  ensemble_mape_2019 <- Metrics::mape(mape_test_2019, ensemble_prediction$mean) * 100
+  ensemble_mape_2020 <- Metrics::mape(mape_test_2020, ensemble_prediction$mean) * 100
+
+  confidence_table <- cbind(as.data.frame(test), as.data.frame(ensemble_prediction$lower), as.data.frame(ensemble_prediction$upper))
+  colnames(confidence_table) <- c("actual", "lower_80", "lower_95", "upper_80", "upper_95")
+
+  confidence_table <- confidence_table %>%
+    mutate(within_80 = ifelse(actual >= lower_80 & actual <= upper_80, 1, 0)) %>%
+    mutate(within_95 = ifelse(actual >= lower_95 & actual <= upper_95, 1, 0))
+
+  ensemble_plot <- autoplot(ts_total_admissions_monthly, color = "red3") +
+    autolayer(ensemble_prediction, series = "Ensemble", PI = TRUE, alpha = 0.5) +
+    theme_bw() +
+    scale_x_continuous(name = "Admission Month", limits = c(2019.5, 2020.5), breaks = seq(2019.5, 2020.25, by = 1 / 4), minor_breaks = seq(2019.5, 2020.5, by = 1 / 12), labels = c("Jul", "Oct", "Jan", "Apr")) +
+    ylab("Admissions per Month") +
+    geom_label(aes(-Inf, Inf), label = paste0(round(ensemble_mape_2019, 1), "%"), hjust = 0, vjust = 1, size = 2) +
+    geom_label(aes(Inf, Inf), label = paste0(round(ensemble_mape_2020, 1), "%"), hjust = 1, vjust = 1, size = 2) +
+    geom_vline(xintercept = 2020, lty = 2) +
+    labs(title = graph_name) +
+    scale_color_manual(values = c("steelblue")) +
+    theme(legend.position = "none", axis.title.x = element_blank(), axis.title.y = element_blank(), plot.title = element_text(size = 10, hjust = 0.5))
+
+  return(list(ensemble_plot, ensemble_mape_2019, ensemble_mape_2020))
+}
+
+plot_list_figure_3 <- list()
+mape_2019 <- list(length = length(levels(all_phis_2010_to_2020$simplified_principal_dx)))
+mape_2020 <- list(length = length(levels(all_phis_2010_to_2020$simplified_principal_dx)))
+
+for (i in levels(all_phis_2010_to_2020$simplified_principal_dx)) {
+  plot_list_figure_3[[i]] <- diagnosis_ensemble_forecast_function(filter(all_phis_2010_to_2020, simplified_principal_dx == i), i)[[1]]
+  mape_2019[[i]] <- diagnosis_ensemble_forecast_function(filter(all_phis_2010_to_2020, simplified_principal_dx == i), i)[[2]]
+  mape_2020[[i]] <- diagnosis_ensemble_forecast_function(filter(all_phis_2010_to_2020, simplified_principal_dx == i), i)[[3]]
+}
+
+figure_3 <- cowplot::plot_grid(plotlist = plot_list_figure_3, ncol = 4)
+
+figure_3 <- arrangeGrob(figure_3, left = figure_y_label, bottom = figure_x_label)
+
+ggsave("Seasonality_Manuscript_Figures/figure_3.png", figure_3)
+ggsave("Seasonality_Manuscript_Figures/figure_3.tiff", figure_3)
+```
+
+```{r mape_statistics}
+mape_comparison_table <- tibble(names(unlist(mape_2019)), unlist(mape_2019), unlist(mape_2020)) %>%
+  rename("Diagnosis" = `names(unlist(mape_2019))`, "mape_2019" = `unlist(mape_2019)`, "mape_2020" = `unlist(mape_2020)`)
+
+mape_t_test <- ifelse(t.test(mape_comparison_table$mape_2019, mape_comparison_table$mape_2020, paired = TRUE)$p.value < 0.001, "< 0.001", paste0("= ", round(t.test(mape_comparison_table$mape_2019, mape_comparison_table$mape_2020, paired = TRUE)$p.value, 3)))
+
+mape_result <- paste0("Overall, models accurately predicted admission rates from July 2019 until December 2019, but not from January 2020 to June 2020 (mean absolute percentage error range ", round(min(mape_comparison_table$mape_2019), 1), "% to ", round(max(mape_comparison_table$mape_2019), 1), "%, versus ", round(min(mape_comparison_table$mape_2020), 1), "% to ", round(max(mape_comparison_table$mape_2020), 1), "% respectively, p ", mape_t_test, " by paired t-test).")
+```
+
+# Methods
+
+The list of ICD codes for each selected diagnosis is shown in **Supplemental Table 1**.
+
+All statistical analyses were performed using RStudio version 1.3.1073 (RStudio, Boston, MA) and R version 4.0.2 (R Foundation for Statistical Computing, Vienna, Austria) with the following packages: `r stringr::str_c(unlist(map(sessionInfo()$otherPkgs, ~ .$Package)), collapse = ", ")`.
+
+# Results
+
+**Demographics:** There were `r hospitals_after_filtering_for_10_years_of_data` hospitals with admission data in PHIS between 1/1/2010 and 6/30/2020. There were `r total_encounters` encounters among `r total_patients` patients beginning in 2010, of which `r encounters_2020` (`r percent_2020`%) encounters were between 1/1/2020 and 6/30/2020. As shown in **Table 1**, the cohort had a median (IQR) age of `r demographics_all_phis_2010_to_2020[4,2]` years, and was `r percent_male` male, `r percent_white` white, `r percent_black` black, and `r percent_hispanic` Hispanic. `r percent_government` patients had government insurance, and `r percent_ccc` had a pre-existing complex chronic condition. Overall survival to discharge was `r percent_alive`. There were `r length(levels(all_phis_2010_to_2020$simplified_principal_dx))` selected diagnoses encompassing `r included_diagnoses` (`r included_diagnoses_percent`%) encounters. The number of encounters for each selected diagnosis is shown in **Supplemental Table 2**; birth, bronchiolitis, and trauma were the most common diagnoses.
+
+**Seasonal Patterns in PHIS Admissions:** Overall admissions in PHIS between 2010 and 2019 are shown in **Figure 1**. There was an increase in the total number of admissions in winter months compared to summer months between 2010 and 2019. There were significantly fewer admissions in July versus January between 2010 and 2019 (median `r july_median_admissions` vs. `r jan_median_admissions`, p `r jan_july_wilcox_p` by Wilcoxon rank sum test). There was a marked decrease in the number of admissions beginning in March 2020 compared to 2010-2019, with a nadir in April 2020 at `r april_2020_admissions` compared to a median of `r april_median_admissions` in April 2010-2019. Admissions increased slightly in May and June of 2020, but did not recover to prior years, with `r june_2020_admissions` in June 2020 compared to a median of `r june_median_admissions` in June 2010-2019.
+
+**Seasonal Patterns in Selected Diagnoses:** Admissions for selected diagnoses are shown in **Figure 2**. Several distinct seasonal patterns were noted in the data. Admissions for bronchiolitis, dehydration, Kawasaki syndrome, S. pneumoniae, and sepsis exhibited significant winter-predominance. As bronchiolitis coding changed in ICD-10 to include separate diagnostic codes for respiratory syncytial virus and human metapneumovirus, the seasonality of individual pathogens is shown in **Supplemental Figure 1** for 2016-2019. Admissions for asthma and mental health admissions showed significant fall/spring-predominance correlated with the school-year calendar. Admissions for diabetic ketoacidosis showed significant summer/winter-predominance inversely correlated with the school-year calendar. Admissions for appendicitis, atrial septal defects, birth, hypoplastic left heart syndrome, tetralogy of Fallot, and trauma showed significant summer-predominance. In the case of hypoplastic left heart syndrome, summer-predominance was mediated by admissions for children greater than one year old, as shown in **Supplemental Figure 2**. Admissions for cardiac arrest and coarctation of the aorta did not meet criteria for significant seasonal variation.
+
+**Changes in Seasonal Patterns During COVID-19:** There were marked deviations from previous seasonal patterns in 2020 as shown in red in **Figure 2**. Admissions for bronchiolitis and S. pneumoniae reached previous summer rates by April 2020. Admissions for trauma did not exhibit a typical increase in spring 2020. Admissions for appendicitis, atrial septal defects, asthma, coarctation of the aorta, dehydration, hypoplastic left heart syndrome, kawasaki syndrome, mental health conditions, sepsis, and tetralogy of Fallot fell below expected levels. Birth rates were unaffected. Changes in seasonal patterns were identified using ensemble time series forecasting models in **Figure 3**. `r mape_result` The admission rates for atrial septal defect and hypoplastic left heart syndrome were below the 95% confidence interval predicted by the models in 8/2019 and 12/2019 respectively. All other conditions remained within the model 95% confidence intervals (95% CI) between 7/2019 and 12/2019. Admissions for birth remained within the model 95% CI between 1/2020 and 6/2020. Every other condition fell below the model 95% CI between 1/2020 and 6/2020. 
+
+**Hospital Charges:** There were `r cost_encounters` encounters among `r cost_patients` patients with hospital charge data available. The quarterly total hospital charges, adjusted for CMS wage/price index and quarterly GDP are shown in **Supplemental Figure 3**. The per-admission charges with the same adjustments are shown in **Supplemental Figure 4.** The total hospital charges in quarter 1 of 2020 were `r charges_2020_q1`, compared to a median of `r charges_median_q1` between 2010-2019 `r charges_2020_q1_percent`. The total hospital charges in quarter 2 of 2020 were `r charges_2020_q2`, compared to a median of `r charges_median_q2` between 2010-2019 `r charges_2020_q2_percent`. However, the median per-admission charge in 2020 was `r median_encounter_cost_2020` compared to a median of `r median_encounter_cost_2010_to_2019` in 2010-2019 (`r median_encounter_cost_wilcox_p_value`).
+
+**Exploratory Analyses:** Diagnoses including any cause of "acute respiratory failure" displayed significant winter-predominance. In-hospital mortality did not meet criteria for significant seasonal variation. Seasonal-trends and machine-learning models for respiratory failure and in-hospital mortality are shown in **Supplemental Figure 5**. There were annual increases in admissions for acute respiratory failure from 2010 through February 2020 with a rapid decline in spring 2020. Notably, there were `r respiratory_failure_dec_2019` admissions for acute respiratory failure in December 2019 compared to `r respiratory_failure_dec_2018` admissions in December 2018, and `r respiratory_failure_jan_2020` in January 2020 compared to `r respiratory_failure_jan_2019` in January 2019. Acute respiratory failure fell below the model 95% CI beginning in April 2020. There were no substantial changes in coding for in-hospital mortality between 2010-2019. In-hospital mortality fell below the model 95% CI beginning in March 2020.
+
+# Formal Seasonality Testing
+
+```{r seasonality_testing, results ="markdown"}
+
+seasonality_testing_function <- function(diagnosis_table) {
+  require(seastests)
+  temp <- diagnosis_table
+
+  temp$actual_admit_date <- temp$admit_date
+  temp$admit_month <- month(temp$actual_admit_date)
+  temp$admit_year <- year(temp$actual_admit_date)
+  temp <- filter(temp, admit_year < 2020)
+
+  time_series_admission_table <- temp %>%
+    group_by(admit_year) %>%
+    group_by(admit_month, add = TRUE) %>%
+    summarize(
+      "total_admissions" = n()
+    )
+
+  ts_total_admissions_monthly <- ts(time_series_admission_table$total_admissions, frequency = 12, start = c(2010, 1))
+  temp_season <- seastests::isSeasonal(ts_total_admissions_monthly)
+  return(temp_season)
+}
+
+seasonality_test_list <- list()
+
+for (i in levels(all_phis_2010_to_2020$simplified_principal_dx)) {
+  seasonality_test_list[[i]] <- seasonality_testing_function(filter(all_phis_2010_to_2020, simplified_principal_dx == i))
+}
+
+paste0("The following diagnoses did not meet criteria for seasonality based on Webel and Ollech's test: ", str_c(names(seasonality_test_list)[lapply(seasonality_test_list, mean) == 0], collapse = " and "), ".")
+
+paste0("The following diagnoses met criteria for seasonality based on Webel and Ollech's test: ", str_c(names(seasonality_test_list)[lapply(seasonality_test_list, mean) == 1], collapse = ", "), ".")
+```
+
+# Figures
+
+## Figure 1: Overall admissions in PHIS
+
+```{r figure_1, results="markdown"}
+figure_1
+```
+
+## Figure 2: Admissions according to specific encounter diagnosis
+
+```{r figure_2, results="markdown"}
+plot_grid(figure_2)
+```
+
+## Figure 3: Ensemble machine learning according to diagnosis
+
+```{r figure_3, results="markdown"}
+plot_grid(figure_3)
+```
+
+## Supplemental Figure 1: Bronchiolitis Seasonality by Pathogen
+
+```{r supplemental_figure_1, results = "markdown"}
+temp <- all_phis_2010_to_2020 %>%
+  filter(principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^J21")) %>%
+  filter(admit_year >= 2016)
+
+temp$actual_admit_date <- temp$admit_date
+temp$normalized_admit_date <- temp$admit_date
+temp$normalized_admit_week <- week(temp$admit_date)
+temp$actual_admit_year <- year(temp$actual_admit_date)
+temp$month_no_day <- mdy(paste(temp$admit_month, "01", temp$admit_year))
+year(temp$normalized_admit_date) <- 2010 # set to a single year to combine years together
+
+# LOESS Smoothing Graph
+bronchiolitis_seaonsality_plot <- temp %>%
+  mutate(principal_dx_title_icd = case_when(
+    principal_dx_title_icd == "acute bronchiolitis due to human metapneumovirus" ~ "human metapneumovirus",
+    principal_dx_title_icd == "acute bronchiolitis due to respiratory syncytial virus" ~ "respiratory syncytial virus",
+    principal_dx_title_icd == "acute bronchiolitis, unspecified" |
+      principal_dx_title_icd == "acute bronchiolitis due to other specified organisms" ~ "other/unspecified"
+  )) %>%
+  mutate(principal_dx_title_icd = factor(principal_dx_title_icd, levels = c("human metapneumovirus", "respiratory syncytial virus", "other/unspecified"))) %>%
+  group_by(admit_month) %>%
+  filter(admit_year < 2020) %>%
+  group_by(admit_year, .add = TRUE) %>%
+  group_by(principal_dx_title_icd, .add = TRUE) %>%
+  summarize(
+    "Number of Admissions" = n()
+  ) %>%
+  pivot_longer(cols = c(`Number of Admissions`)) %>%
+  mutate(name = factor(name, levels = c("Number of Admissions"))) %>%
+  ggplot(aes(admit_month, value, color = admit_year)) +
+  geom_line(aes(group = admit_year), alpha = 0.5) +
+  geom_smooth(color = "black") +
+  scale_color_distiller(name = "Admit Year", palette = "Blues") +
+  theme_bw() +
+  scale_x_continuous(name = "Admit Month", breaks = c(1, 4, 7, 10), labels = c("Jan", "Apr", "Jul", "Oct"), minor_breaks = seq(1, 12, 1)) +
+  ylab("Admissions (n)") +
+  theme(plot.title = element_text(size = 10, hjust = 0.5)) +
+  facet_wrap(vars(principal_dx_title_icd), ncol = 1, scales = "free_y")
+
+bronchiolitis_seaonsality_plot
+
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_1.png")
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_1.tiff")
+```
+
+## Supplemental Figure 2: HLHS Seasonality by Age
+
+```{r supplemental_figure_2, results = "markdown"}
+temp <- all_phis_2010_to_2020 %>%
+  filter((principal_dx_version_icd == 9 & str_detect(principal_dx_icd, "^7467")) |
+    (principal_dx_version_icd == 0 & str_detect(principal_dx_icd, "^Q234")))
+
+temp$actual_admit_date <- temp$admit_date
+temp$normalized_admit_date <- temp$admit_date
+temp$normalized_admit_week <- week(temp$admit_date)
+temp$actual_admit_year <- year(temp$actual_admit_date)
+temp$month_no_day <- mdy(paste(temp$admit_month, "01", temp$admit_year))
+year(temp$normalized_admit_date) <- 2010 # set to a single year to combine years together
+
+
+# LOESS Smoothing Graph
+hlhs_seaonsality_plot <- temp %>%
+  mutate(age_category = case_when(
+    admit_age_in_months < 12 ~ "Under One Year Old",
+    admit_age_in_months >= 12 ~ "One Year and Older"
+  )) %>%
+  mutate(age_category = factor(age_category, levels = c("Under One Year Old", "One Year and Older"))) %>%
+  group_by(admit_month) %>%
+  filter(admit_year < 2020) %>%
+  group_by(admit_year, .add = TRUE) %>%
+  group_by(age_category, .add = TRUE) %>%
+  group_by(principal_dx_title_icd, .add = TRUE) %>%
+  summarize(
+    "Number of Admissions" = n()
+  ) %>%
+  pivot_longer(cols = c(`Number of Admissions`)) %>%
+  mutate(name = factor(name, levels = c("Number of Admissions"))) %>%
+  ggplot(aes(admit_month, value, color = admit_year)) +
+  geom_line(aes(group = admit_year), alpha = 0.5) +
+  geom_smooth(color = "black") +
+  scale_color_distiller(name = "Admit Year", palette = "Blues", breaks = seq(2010, 2019, by = 3)) +
+  theme_bw() +
+  scale_x_continuous(name = "Admit Month", breaks = c(1, 4, 7, 10), labels = c("Jan", "Apr", "Jul", "Oct"), minor_breaks = seq(1, 12, 1)) +
+  ylab("Admissions (n)") +
+  theme(plot.title = element_text(size = 10, hjust = 0.5)) +
+  facet_wrap(vars(age_category), ncol = 1, scales = "free_y")
+
+hlhs_seaonsality_plot
+
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_2.png")
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_2.tiff")
+```
+
+## Supplemental Figure 3: Total Hospital Charges by Quarter
+
+```{r supplemental_figure_3, results="markdown"}
+supplemental_figure_3
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_3.png")
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_3.tiff")
+```
+
+## Supplemental Figure 4: Per-Admission Hospital Charges by Quarter
+
+```{r supplemental_figure_4, results="markdown"}
+supplemental_figure_4
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_4.png")
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_4.tiff")
+```
+
+## Supplemental Figure 5: Acute Respiratory Failure and In-Hospital Mortality
+
+```{r supplemental_figure_5, results="markdown"}
+seasonality_testing_function(filter(all_phis_2010_to_2020, str_detect(principal_dx_title_icd, "acute respiratory failure")))
+seasonality_testing_function(filter(all_phis_2010_to_2020, discharge_mortality_flag == "Y"))
+
+supplemental_figure_5a <- diagnosis_seasonality_graphs_function(filter(all_phis_2010_to_2020, str_detect(principal_dx_title_icd, "acute respiratory failure")), "Acute Respiratory Failure")
+supplemental_figure_5b <- diagnosis_ensemble_forecast_function(filter(all_phis_2010_to_2020, str_detect(principal_dx_title_icd, "acute respiratory failure")), "Acute Respiratory Failure")[[1]]
+
+supplemental_figure_5c <- diagnosis_seasonality_graphs_function(filter(all_phis_2010_to_2020, discharge_mortality_flag == "Y"), "In-Hospital Mortality")
+supplemental_figure_5d <- diagnosis_ensemble_forecast_function(filter(all_phis_2010_to_2020, discharge_mortality_flag == "Y"), "In-Hospital Mortality")[[1]]
+
+supplemental_figure_5 <- cowplot::plot_grid(supplemental_figure_5a, supplemental_figure_5b, supplemental_figure_5c, supplemental_figure_5d, ncol = 2)
+supplemental_figure_5 <- arrangeGrob(supplemental_figure_5, left = figure_y_label, bottom = figure_x_label)
+
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_5.png", supplemental_figure_5)
+ggsave("Seasonality_Manuscript_Figures/supplemental_figure_5.tiff", supplemental_figure_5)
+
+plot_grid(supplemental_figure_5)
+```
+
+# Tables
+
+## Table 1: Demographics
+
+```{r show_demographics_table, results="hold"}
+# Show demographics table without the spurious row needed for huxtable formatting
+
+library(kableExtra)
+colnames(demographics_all_phis_2010_to_2020) <- demographics_all_phis_2010_to_2020[1, ]
+
+knitr::kable(demographics_all_phis_2010_to_2020[-1, ]) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), fixed_thead = T) %>%
+  pack_rows("n", 1, 2) %>%
+  pack_rows("Age", 3, 3) %>%
+  pack_rows("Sex", 4, 4) %>%
+  pack_rows("Race", 5, 10) %>%
+  pack_rows("Ethnicity", 11, 11) %>%
+  pack_rows("Insurance", 12, 14) %>%
+  pack_rows("Complex Chronic Conditions", 15, 27) %>%
+  pack_rows("Mental Health", 28, 28) %>%
+  pack_rows("Admission Characteristics", 29, 32) %>%
+  pack_rows("Cost of Care", 33, 34) %>%
+  pack_rows("Survival", 35, 35)
+```
+
+## Supplemental Table 1: List of included diagnostic codes
+
+```{r supplemental_table_1, results="hold"}
+all_phis_2010_to_2020 %>%
+  filter(!is.na(simplified_principal_dx)) %>%
+  group_by(simplified_principal_dx) %>%
+  group_by(principal_dx_version_icd, .add = TRUE) %>%
+  group_by(principal_dx_icd, .add = TRUE) %>%
+  count() %>%
+  mutate(principal_dx_version_icd = ifelse(principal_dx_version_icd == 0, 10, principal_dx_version_icd)) %>%
+  rename("Diagnosis" = simplified_principal_dx, "ICD Version" = principal_dx_version_icd, "ICD Code" = principal_dx_icd, "Number of Encounters" = n) %>%
+  knitr::kable(.) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), fixed_thead = T)
+```
+
+## Supplemental Table 2: number of encounters with included diagnoses
+
+```{r supplemental_table_2, results = "hold"}
+all_phis_2010_to_2020 %>%
+  group_by(simplified_principal_dx) %>%
+  summarise(
+    n = n(),
+    col_percent = round(n() / nrow(all_phis_2010_to_2020) * 100, 2)
+  ) %>%
+  mutate(value = paste0(prettyNum(n, big.mark = ","), " (", col_percent, "%)")) %>%
+  head(., -1) %>%
+  select("Diagnosis" = simplified_principal_dx, "Number of Encounters (%)" = value) %>%
+  knitr::kable(.) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), fixed_thead = T)
+```
+Note: the percentage shown is a percentage of all PHIS inpatient encounters.
+
+# Time Required
+
+```{r time_calculation}
+end_time <- now()
+
+total_time <- round(dseconds(start_time %--% end_time) / 60)
+```
+
+The total time rendering this document was `r total_time` minutes.
